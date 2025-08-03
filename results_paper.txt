@@ -1,0 +1,42 @@
+1qnx: 
+TKQEL: TKQEL
+       TKQEK
+       TKQEKQ
+       LTKQEK
+       TKQE
+       
+KPN: KPN
+     KPNN
+     KPNG
+     KPNP
+     KPN
+     
+GKIDS: GKIQE
+       GKIQEK
+       SGKIQE
+       GKIQ
+       GKIK
+
+
+1poc:
+GPSELG: GPNEL  (also in paper)
+	SGPNEL
+	GPNESS
+	GPNES
+	SGPNES
+	
+DRSKP: DHKP
+       KSKP
+       DKSK
+       VDKSK
+       NESSGP
+       
+LGRA: LGRF
+      LGRFK
+      LGRF
+      LGRFK
+      LGRFH
+      
+
+
+

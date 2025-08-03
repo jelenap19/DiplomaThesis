@@ -1,0 +1,349 @@
+---
+title: "thesis"
+author: "Jelena Pasagic"
+date: "2025-04-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Biostrings)
+library(pwalign)
+library(igraph)
+library(bio3d)
+library(ggraph)
+library(ggplot2)
+library(DSSP)
+library(readxl)
+library(tidyverse)
+library(stringr)
+library(msa)
+```
+
+
+```{r}
+
+pdb <- read.pdb("1qnx.pdb") #reading the pdb
+
+#Removing all atoms inside the protein:
+
+pdb <- trim(pdb, "protein") #to remove NA and HOH, stopped working for some reason
+
+#pdb_dssp <- dssp(pdb, exefile = "mkdssp.exe")  #doesnt work
+#pdb_dssp <- dssp.pdb(pdb, exefile = "mkdssp.exe")  # also not working
+
+dssp_data <- read_excel("dssp_table.xlsx") #reading the data like this for now until I switch to windows
+acc <- dssp_data$ACC  #extracting only solvent exposure data
+
+Calpha <- pdb$atom[pdb$calpha,] #selecting only C alpha atoms
+
+df <- cbind(Calpha, acc)  #combining the data together
+```
+
+
+Making the **absolute surface area table** for each residue, merging with the c alpha atom table and selection only the residues on the outside
+
+```{r}
+#making the absolute surface area table for each residue
+asa_table <- as.data.frame(AMINO_ACID_CODE)
+asa_table$asa <- c(129,274,195,193,167,225,223,104, 224,197,201,236,224,240,159,155,172,285,263,174,0,0,0,0,0,0)
+asa_table <- asa_table[1:20,]
+asa_table <- asa_table %>% rename(resid = AMINO_ACID_CODE) %>% mutate(resid = toupper(resid))
+
+df <- merge(df, asa_table, by = "resid")
+df$rsa <- 100*df$acc/df$asa  #calculating relative surface area
+df_outside <- df[df$rsa > 5.0, ] #only selecting residues with big solvent exposure
+
+row.names(df_outside) <- str_c(aa321(df_outside$resid), df_outside$resno, sep="") #changing the labels of atoms
+
+```
+
+
+**Distance matrix and graph**
+
+```{r}
+dist_matrix <- as.matrix(dist(df_outside[,c("x", "y", "z")])) #calculating pairwise distance with dist()
+dist_matrix[dist_matrix >= 6] <- 0
+dist_matrix[dist_matrix > 0] <- 1 # only those close enough are important for the graph
+
+graph <- graph_from_adjacency_matrix(dist_matrix, mode = "undirected", weighted = FALSE)
+
+plot(graph, 
+     vertex.size = 10, 
+     vertex.label.cex = 0.5,  
+     vertex.label.color = "black",
+     vertex.color = "orange",
+     edge.color = "black",
+     edge.width = 1,
+     main = "1pdb_graph")
+
+
+rm(df, asa_table, df_outside, dist_matrix, dssp_data, acc)
+
+```
+
+
+**Pattern**
+
+**MSA**
+
+
+```{r}
+sequences <- c(
+"CNDKSKPYC",
+"CLDKSKPVC",
+"CLDKSKPQC",
+"CVDRSKPTC",
+"CYDRSKPTC",
+"CKDRSKPDC",
+"CPDRSKPHC",
+"CYDRSKPYC",
+"CDHSKPHTC",
+"CDRSKPLHC")
+
+sequences <- AAStringSet(sequences)
+multi <-msa(sequences, method = "Muscle", cluster="default")
+
+cons <- msaConsensusSequence(multi)
+
+pattern <- cons 
+
+pattern <- gsub("\\?", "X", pattern)
+pattern <- gsub("-", "", pattern)
+pattern <- gsub('^.|.$', '', pattern)
+pattern <- gsub('^.|.$', '', pattern)
+pattern <- toString(pattern)
+
+#  pattern = "LKPNKY" 
+
+ 
+rm(multi, cons, sequences)
+```
+
+
+**Function for finding all simple paths and formatting for later comparing**
+
+```{r}
+candidates <- data.frame(word = character(0), pos = character(0))
+
+max_len <- nchar(pattern)
+
+i <- 1
+while (i < (length(graph)+1)){
+  sub <- induced_subgraph(graph, c(unlist(adjacent_vertices(graph, V(graph)[i])), V(graph)[i]))
+  if(length(sub) < (nchar(pattern)-2)) {
+    i = i + 1
+  }
+  else{
+    j <- 1
+    while (j < (length(sub)+1)){
+      paths <- all_simple_paths(sub, from = V(sub)[j], mode = "all", cutoff = max_len)
+      k <- 1
+      while (k < length(paths)+1){
+        if (length(paths[[k]]) < (nchar(pattern)-2)) {
+         k = k+1 
+        } 
+        else {
+          wrd <- paste(substring(names(paths[[k]]), 1, 1), collapse = "")
+          pos <- paste(sub("^[A-Za-z]", "", names(paths[[k]])), collapse = " ")
+          candidates[nrow(candidates)+1, ] <- c(wrd, pos)
+          k = k+1
+        }
+      }
+      j = j+1
+    }
+    i = i+1
+  }
+}
+
+candidates$pos <- lapply(candidates$pos, function(x) as.numeric(strsplit(x, "\\s+")[[1]]))
+
+rm(max_len, sub, paths, wrd, pos, i,j,k, graph)
+
+```
+
+**Angles**
+
+```{r}
+keep <- rep(TRUE, nrow(candidates))
+
+for (i in seq_len(nrow(candidates))) {
+  temp <- candidates[i,]
+  for (j in seq(2, length(temp$pos[[1]]) - 1)) {
+    a = temp$pos[[1]][j-1]
+    b = temp$pos[[1]][j]
+    c = temp$pos[[1]][j+1]
+
+    A <- atom.select(pdb, elety = "CA", resno = a)
+    B <- atom.select(pdb, elety = "CA", resno = b)
+    C <- atom.select(pdb, elety = "CA", resno = c)
+
+    v <- c(pdb$xyz[A$xyz], pdb$xyz[B$xyz], pdb$xyz[C$xyz])
+    ang <- angle.xyz(v)
+
+    if (ang < 85) {
+      keep[i] <- FALSE
+      break 
+    }
+  }
+}
+
+candidates_angles <- candidates[keep, ]
+
+rm(keep, temp, a, b, c, A, B, C, v, ang)
+#rm(candidates)
+
+```
+
+**Deleting duplicates**
+
+```{r}
+candidates_unique <- candidates_angles %>%
+  rowwise() %>%
+  mutate(key = paste(sort(pos), collapse = "_")) %>%
+  ungroup() %>%
+  distinct(key, .keep_all = TRUE) %>%
+  select(-key)
+
+#rm(candidates_angles)
+```
+
+
+**Pairwise alignment** 
+
+```{r}
+matches <- data.frame(match = character(0), scored = numeric(0), pos = character(0)) 
+
+best_score <- pairwiseAlignment(pattern , pattern,
+                                             gapOpening = -2  ,gapExtension = -2,
+                                             type="global-local",
+                                             substitutionMatrix = "BLOSUM62")
+
+
+l =  1
+while (l < (nrow(candidates_unique)+1)){
+  subject <- toString(candidates_unique[l,1])
+  pwa <- pairwiseAlignment(pattern , subject,
+                                             gapOpening = -2  ,gapExtension = -2,
+                                             type="global-local",
+                                             substitutionMatrix = "BLOSUM62")
+   if (score(pwa) > (0.3 * score(best_score))) {
+    matches[nrow(matches)+1, ] <- c(candidates_unique[l,1], score(pwa), candidates_unique[l,2])
+    }
+  l <- l + 1
+}
+
+rm(best_score, l, subject, pwa)
+```
+
+
+**Removing similar hits**
+
+```{r}
+
+matches <- matches[order(matches$scored, decreasing = TRUE), ]
+n <- nrow(matches)
+keep <- rep(TRUE, n)
+thresh <- 0.6
+
+for (i in seq_len(n)) {
+  if (keep[i] == FALSE) next
+  A <- matches$pos[[i]]
+  for (j in (i+1):n) {
+    if (keep[j] == FALSE) next
+    B <- matches$pos[[j]]
+    presek <- length(intersect(A, B))
+    unija <- length(union(A, B))
+    if (unija > 0 && (presek / unija) >= thresh) {
+      keep[j] <- FALSE
+    }
+  }
+}
+
+matches_clean <- matches[keep,]
+
+rm(n, keep, thresh)
+
+#rm(matches)
+
+```
+
+
+
+**Showing results**
+
+*MSA*
+
+```{r}
+matches_clean %>% 
+  mutate(positions = map_chr(pos, ~ paste(.x, collapse = " "))) %>% 
+  select(-pos)
+```
+
+For the whole script it takes 1 min 30 sec
+There are                   26172 candidates
+After angle filtering       2008 candidates
+After removing duplicates   633 candidates
+There are                   12 matches
+After removing similar      7 matches
+
+word   score    positions
+DKRP	  13  	139 138 62 67	
+DKGGP	  13	  139 138 63 66 67	
+DKRGP	  12	  139 138 62 66 65	
+DQQKT	  11	  43 42 39 38 37	
+DKGP	  11	  139 138 63 65	
+DEQKTL	10	  43 40 39 38 37 36	
+DNPGP	  10	  139 64 65 66 67
+
+
+*LKPNKY*
+
+For the whole script it takes 2 min 3 sec
+There are                   29894 candidates
+After angle filtering       816 candidates
+After removing duplicates   281 candidates
+There are                   1 matches
+After removing similar      1 matches
+
+word   score   positions
+KPNNP    11    143 142 141 64 65
+```{r}
+matches_clean<- readRDS(file = "matches_clean_LKPNKY.RDS")
+
+matches_clean %>% 
+  mutate(positions = map_chr(pos, ~ paste(.x, collapse = " "))) %>% 
+  select(-pos)
+```
+What needs to be worked on:
+The graph is not connected - Q111 not connected in the graph since its neighbors are A112 (has acc = 1) and G110 (has acc = 4 )
+Maybe the solution is to lower the threshold to accommodate those.
+
+Since I am using windows and had to adapt a little due to problems with dssp. I need to switch to linux, so the script can be universal for all.
+
+The pattern modification needs to be updated so its universal 
+
+Matches - I want to change the function so it is recursive and the threshold can be  adjustable, rn it is not universal I just choose a percentage which gives me 2-12 hits
+Same for removing similar hits.
+
+
+**For easy retrieval of the data**
+
+```{r}
+
+graph <- readRDS(file = "graph.RDS")
+
+candidates <- readRDS(file = "candidates_MSA.RDS")
+candidates_angles <- readRDS(file = "candidates_angles_MSA.RDS")
+candidates_unique <- readRDS(file = "candidates_unique_MSA.RDS")
+matches <- readRDS(file = "matches_MSA.RDS")
+matches_clean <- readRDS(file = "matches_clean_MSA.RDS")
+
+candidates <- readRDS(file = "candidates_LKPNKY.RDS")
+candidates_angles <- readRDS(file = "candidates_angles_LKPNKY.RDS")
+candidates_unique <- readRDS(file = "candidates_unique_LKPNKY.RDS")
+matches <- readRDS(file = "matches_LKPNKY.RDS")
+matches_clean<- readRDS(file = "matches_clean_LKPNKY.RDS")
+```
+
